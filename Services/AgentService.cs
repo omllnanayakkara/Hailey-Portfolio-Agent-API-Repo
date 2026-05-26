@@ -3,6 +3,7 @@ using Azure.AI.Projects;
 using Azure.Identity;
 using Microsoft.Extensions.Logging;
 using OpenAI.Responses;
+using System.ClientModel;
 
 #pragma warning disable OPENAI001
 
@@ -25,6 +26,22 @@ namespace portfolio_functions.Services
                 return reply;
             }
             catch (Exception ex) {
+                logger.LogError("Message send failed: {0}, error: {1}", message, ex.Message);
+                throw new Exception(ex.Message);
+            }
+        }
+
+        public CollectionResult<StreamingResponseUpdate> StreamMessage(string message)
+        {
+            try
+            {
+                // Use the agent to generate a response
+                string fullresponse = string.Empty;
+                var streamingResponse = responseClient.CreateResponseStreaming(message);
+                return streamingResponse;
+            }
+            catch (Exception ex)
+            {
                 logger.LogError("Message send failed: {0}, error: {1}", message, ex.Message);
                 throw new Exception(ex.Message);
             }
