@@ -17,10 +17,10 @@ record UserMessage(string message);
 public class StreamMessages
 {
     private readonly ILogger<StreamMessages> _logger;
-    private readonly ProjectResponsesClient _responseClient;
-    public StreamMessages(ILogger<StreamMessages> logger, IAgentClient agentClient)
+    private readonly IAgentService _agentService;
+    public StreamMessages(ILogger<StreamMessages> logger, IAgentService agentService)
     {
-        _responseClient = agentClient.GetProjectResponsesClient();
+        _agentService = agentService;
         _logger = logger;
     }
 
@@ -28,14 +28,17 @@ public class StreamMessages
     public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", "post")] HttpRequest req)
     {
         _logger.LogInformation("C# HTTP trigger function processed a request.");
+        bool _internal = false;
+        var conversationId = req.Cookies["conversationId"]??null;
         var usermessage = await JsonSerializer.DeserializeAsync<UserMessage>(req.Body);
-        var streamresponses = _responseClient.CreateResponseStreamingAsync(usermessage!.message);
+        var agentServiceResponse = _agentService.GetProjectResponsesClient(conversationId);
+        var streamresponses = agentServiceResponse.ProjectResponsesClient.CreateResponseStreamingAsync(usermessage!.message);
 
         // Set response headers for streaming
         req.HttpContext.Response.ContentType = "text/event-stream";
         req.HttpContext.Response.Headers.Add("Cache-Control", "no-cache");
         req.HttpContext.Response.Headers.Add("Connection", "keep-alive");
-
+        req.HttpContext.Response.Cookies.Append("conversationId", agentServiceResponse.ConversationId);
         // Stream the response
         await foreach (var streamResponse in streamresponses)
         {
@@ -50,6 +53,20 @@ public class StreamMessages
             else if (streamResponse is StreamingResponseOutputTextDeltaUpdate textDelta)
             {
                 Console.WriteLine($"Delta: {textDelta.Delta}");
+                if (textDelta.Delta.Contains("{"))
+                {
+                    _internal = true;
+                    continue;
+                }
+                if (textDelta.Delta.Contains("}") && _internal)
+                {
+                    _internal = false;
+                    continue;
+                }
+                if (_internal)
+                {
+                    continue;
+                }
                 await req.HttpContext.Response.WriteAsync($"data: {textDelta.Delta}\n\n");
             }
             else if (streamResponse is StreamingResponseOutputTextDoneUpdate textDoneUpdate)

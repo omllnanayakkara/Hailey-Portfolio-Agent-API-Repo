@@ -1,50 +1,26 @@
 ﻿using Azure.AI.Extensions.OpenAI;
 using Azure.AI.Projects;
-using Azure.Identity;
-using Microsoft.Extensions.Logging;
-using OpenAI.Responses;
-using System.ClientModel;
-
-#pragma warning disable OPENAI001
+using portfolio_functions.Models;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 namespace portfolio_functions.Services
 {
-    public class AgentService(ILogger<AgentService> logger, IAgentClient agentClient) : IAgentService
+    public class AgentService(IAgentClient agentClient) : IAgentService
     {
-        private readonly ProjectResponsesClient responseClient = agentClient.GetProjectResponsesClient();
-        public string SendMessage(string message) 
+        private readonly IAgentClient _agentClient = agentClient;
+        public AgentServiceResponse GetProjectResponsesClient(string? coversationId = null)
         {
-            try
-            {
-
-                // Use the agent to generate a response
-                ResponseResult response = responseClient.CreateResponse(
-                    message
-                );
-                string reply = response.GetOutputText();
-                Console.WriteLine(response.GetOutputText());
-                return reply;
-            }
-            catch (Exception ex) {
-                logger.LogError("Message send failed: {0}, error: {1}", message, ex.Message);
-                throw new Exception(ex.Message);
-            }
-        }
-
-        public CollectionResult<StreamingResponseUpdate> StreamMessage(string message)
-        {
-            try
-            {
-                // Use the agent to generate a response
-                string fullresponse = string.Empty;
-                var streamingResponse = responseClient.CreateResponseStreaming(message);
-                return streamingResponse;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError("Message send failed: {0}, error: {1}", message, ex.Message);
-                throw new Exception(ex.Message);
-            }
+            string _agentName = Environment.GetEnvironmentVariable("AgentName")!;
+            string _agentVersion = Environment.GetEnvironmentVariable("AgentVersion")!;
+            AIProjectClient projectClient = _agentClient.GetProjectClient();
+            ProjectConversation conversation = coversationId is not null ? 
+                projectClient.OpenAI.Conversations.GetProjectConversation(coversationId) :  
+                projectClient.OpenAI.Conversations.CreateProjectConversation();
+            AgentReference agentReference = new(name: _agentName, version: _agentVersion);
+            var progectResponsesClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference, conversation.Id);
+            return new AgentServiceResponse(conversation.Id, progectResponsesClient);
         }
     }
 }

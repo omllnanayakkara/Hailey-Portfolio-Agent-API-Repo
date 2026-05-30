@@ -1,30 +1,27 @@
-using Azure;
 using Azure.AI.Extensions.OpenAI;
 using Azure.Core;
 using Azure.Messaging.WebPubSub;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using OpenAI.Responses;
+using portfolio_functions.Models;
 using portfolio_functions.Services;
-using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 
 #pragma warning disable OPENAI001
 
 namespace portfolio_functions;
 
-record ServerMessage(string message, string status);
+record ServerMessage(string? conversationId, string message, string status);
 
 public class Message
 {
     private readonly ILogger<Message> _logger;
-    private readonly ProjectResponsesClient _responseClient;
-    public Message(ILogger<Message> logger, IAgentClient agentClient)
+    private readonly IAgentService _agentService;
+    public Message(ILogger<Message> logger, IAgentService agentService)
     {
         _logger = logger;
-        _responseClient = agentClient.GetProjectResponsesClient();
+        _agentService = agentService;
     }
 
     [Function("message")]
@@ -33,12 +30,13 @@ public class Message
     [WebPubSubTrigger("agentchat", WebPubSubEventType.User, "message")] UserEventRequest request)
     {
         var client = new WebPubSubServiceClient(Environment.GetEnvironmentVariable("WebPubSubConnectionString"), "agentchat");
+        var userMessage = request.Data.ToObjectFromJson<UserChatMessage>();
+        _logger.LogInformation("Chat message received: message {0} from conversation {1}", userMessage.message, userMessage.conversationId);
+        bool _internal = false;
         try
         {
-            Console.WriteLine(request.Data.ToString());
-            _logger.LogError(request.Data.ToString());
-
-            var streamresponses = _responseClient.CreateResponseStreamingAsync(request.Data.ToString());
+            var (ConversationId, ProjectResponsesClient) = _agentService.GetProjectResponsesClient();
+            var streamresponses = ProjectResponsesClient.CreateResponseStreamingAsync(request.Data.ToString());
 
             // Stream the response
             await foreach (var streamResponse in streamresponses)
@@ -49,7 +47,7 @@ public class Message
                     Console.WriteLine($"Stream response created with ID: {createUpdate.Response.Id}");
                     client.SendToUser(
                          request.ConnectionContext.UserId,
-                         JsonSerializer.Serialize(new ServerMessage("START", "START")),
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, "START", "START")),
                          ContentType.ApplicationJson
                     );
                     
@@ -57,9 +55,19 @@ public class Message
                 else if (streamResponse is StreamingResponseOutputTextDeltaUpdate textDelta)
                 {
                     Console.WriteLine($"Delta: {textDelta.Delta}");
+                    if (textDelta.Delta.Contains("{"))
+                    {
+                        _internal = true;
+                        continue;
+                    }
+
+                    if (_internal)
+                    {
+                        continue;
+                    }
                     client.SendToUser(
                          request.ConnectionContext.UserId,
-                         JsonSerializer.Serialize(new ServerMessage(textDelta.Delta, "INPROGRESS")),
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, textDelta.Delta, "INPROGRESS")),
                          ContentType.ApplicationJson
                     );
 
@@ -67,9 +75,14 @@ public class Message
                 else if (streamResponse is StreamingResponseOutputTextDoneUpdate textDoneUpdate)
                 {
                     Console.WriteLine($"Response done with full message: {textDoneUpdate.Text}");
+                    if (_internal)
+                    {
+                        _internal = false;
+                        continue;
+                    }
                     client.SendToUser(
                          request.ConnectionContext.UserId,
-                         JsonSerializer.Serialize(new ServerMessage(textDoneUpdate.Text, "END")),
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, textDoneUpdate.Text, "END")),
                          ContentType.ApplicationJson
                     );
                 }
@@ -86,7 +99,7 @@ public class Message
             _logger.LogError(ex.Message);
             client.SendToUser(
                  request.ConnectionContext.UserId,
-                 JsonSerializer.Serialize(new ServerMessage(ex.Message, "ERROR")),
+                 JsonSerializer.Serialize(new ServerMessage(userMessage.conversationId, ex.Message, "ERROR")),
                  ContentType.ApplicationJson
             );
         }
