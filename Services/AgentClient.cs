@@ -11,15 +11,11 @@ namespace portfolio_functions.Services
 {
     public class AgentClient : IAgentClient
     {
-        public ProjectResponsesClient GetProjectResponsesClient()
+        public AIProjectClient GetProjectClient()
         {
             string _endpoint = Environment.GetEnvironmentVariable("AgentEndpoint")!;
-            string _agentName = Environment.GetEnvironmentVariable("AgentName")!;
-            string _agentVersion = Environment.GetEnvironmentVariable("AgentVersion")!;
             AIProjectClient projectClient = new(endpoint: new Uri(_endpoint), tokenProvider: new DefaultAzureCredential());
-
-            AgentReference agentReference = new(name: _agentName, version: _agentVersion);
-            return projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference);
+            return projectClient;
         }
     }
 }
