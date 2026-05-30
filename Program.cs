@@ -13,8 +13,8 @@ builder.Services
     .AddApplicationInsightsTelemetryWorkerService()
     .ConfigureFunctionsApplicationInsights();
 
+builder.Services.AddSingleton<IAgentClient, AgentClient>();
 builder.Services.AddScoped<IAgentService, AgentService>();
-builder.Services.AddScoped<IAgentClient, AgentClient>();
 
 builder.Build().Run();
 

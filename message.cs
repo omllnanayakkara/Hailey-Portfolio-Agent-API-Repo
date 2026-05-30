@@ -1,12 +1,18 @@
-using Azure;
+using Azure.AI.Extensions.OpenAI;
 using Azure.Core;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
+using Azure.Messaging.WebPubSub;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using OpenAI.Responses;
+using portfolio_functions.Models;
 using portfolio_functions.Services;
+using System.Text.Json;
+
+#pragma warning disable OPENAI001
 
 namespace portfolio_functions;
+
+record ServerMessage(string? conversationId, string message, string status);
 
 public class Message
 {
@@ -20,31 +26,82 @@ public class Message
 
     [Function("message")]
     [WebPubSubOutput(Hub = "agentchat", Connection = "WebPubSubConnectionString")]
-    public SendToUserAction RunMessage(
+    public async Task RunMessage(
     [WebPubSubTrigger("agentchat", WebPubSubEventType.User, "message")] UserEventRequest request)
     {
+        var client = new WebPubSubServiceClient(Environment.GetEnvironmentVariable("WebPubSubConnectionString"), "agentchat");
+        var userMessage = request.Data.ToObjectFromJson<UserChatMessage>();
+        _logger.LogInformation("Chat message received: message {0} from conversation {1}", userMessage.message, userMessage.conversationId);
+        bool _internal = false;
         try
         {
-            var response = _agentService.SendMessage(request.Data.ToString());
-            Console.WriteLine(request.Data.ToString());
-            _logger.LogError(request.Data.ToString());
-            return new SendToUserAction
+            var (ConversationId, ProjectResponsesClient) = _agentService.GetProjectResponsesClient();
+            var streamresponses = ProjectResponsesClient.CreateResponseStreamingAsync(request.Data.ToString());
+
+            // Stream the response
+            await foreach (var streamResponse in streamresponses)
             {
-                UserId = request.ConnectionContext.UserId,
-                Data = BinaryData.FromString(response),
-                DataType = WebPubSubDataType.Text
-            };
+
+                if (streamResponse is StreamingResponseCreatedUpdate createUpdate)
+                {
+                    Console.WriteLine($"Stream response created with ID: {createUpdate.Response.Id}");
+                    client.SendToUser(
+                         request.ConnectionContext.UserId,
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, "START", "START")),
+                         ContentType.ApplicationJson
+                    );
+                    
+                }
+                else if (streamResponse is StreamingResponseOutputTextDeltaUpdate textDelta)
+                {
+                    Console.WriteLine($"Delta: {textDelta.Delta}");
+                    if (textDelta.Delta.Contains("{"))
+                    {
+                        _internal = true;
+                        continue;
+                    }
+
+                    if (_internal)
+                    {
+                        continue;
+                    }
+                    client.SendToUser(
+                         request.ConnectionContext.UserId,
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, textDelta.Delta, "INPROGRESS")),
+                         ContentType.ApplicationJson
+                    );
+
+                }
+                else if (streamResponse is StreamingResponseOutputTextDoneUpdate textDoneUpdate)
+                {
+                    Console.WriteLine($"Response done with full message: {textDoneUpdate.Text}");
+                    if (_internal)
+                    {
+                        _internal = false;
+                        continue;
+                    }
+                    client.SendToUser(
+                         request.ConnectionContext.UserId,
+                         JsonSerializer.Serialize(new ServerMessage(ConversationId, textDoneUpdate.Text, "END")),
+                         ContentType.ApplicationJson
+                    );
+                }
+                else if (streamResponse is StreamingResponseErrorUpdate errorUpdate)
+                {
+                    throw new InvalidOperationException($"The stream has failed with the error: {errorUpdate.Message}");
+                }
+                
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine(ex.Message);
             _logger.LogError(ex.Message);
-            return new SendToUserAction
-            {
-                UserId = request.ConnectionContext.UserId,
-                Data = BinaryData.FromString($"[{request.ConnectionContext.UserId}] Something went wrong, please try again later."),
-                DataType = WebPubSubDataType.Text
-            };
+            client.SendToUser(
+                 request.ConnectionContext.UserId,
+                 JsonSerializer.Serialize(new ServerMessage(userMessage.conversationId, ex.Message, "ERROR")),
+                 ContentType.ApplicationJson
+            );
         }
 
     }
